@@ -18,8 +18,10 @@
 #include "MFRC522.h"
 #include "pitches.h"
 #include <arduino-timer.h>
+#include <SimpleKalmanFilter.h>
 
 #define LDR_PIN           A0
+#define BUTTON_PIN        3
 #define PIR_PIN           4
 #define SERVO_ONSWITCH    5
 #define SERVO_OFFSWITCH   6
@@ -41,6 +43,16 @@ const byte RFID_KEY[CARDS_KNOWN][CARD_SIZE] = {
   {0xe5, 0xa2, 0x9c, 0x2F}
 };
 
+// --- LDR components
+#define LDR_THRESHOLD       600
+/*
+ SimpleKalmanFilter(e_mea, e_est, q);
+ e_mea: Measurement Uncertainty 
+ e_est: Estimation Uncertainty
+ q: Process Noise
+ */
+SimpleKalmanFilter filter(2, 2, 0.01);
+
 // --- servo angles
 #define ON_TRIGGER          90
 #define ON_RELEASE          0
@@ -50,10 +62,17 @@ const byte RFID_KEY[CARDS_KNOWN][CARD_SIZE] = {
 #define OFF_DEFAULT         OFF_TRIGGER
 
 enum {
-  LDR,
+  PIR,
   SOUND,
-  PIR
+  NO_SENSOR
 } system_state;
+
+#define OFF                 0
+#define ON                  1
+#define ACTIVATE            2
+
+#define PRESSED             0
+#define RELEASED            1
 
 uint8_t sound_val = 0;
 uint16_t ldr_val = 0;
@@ -62,15 +81,30 @@ uint8_t  id_buffer[CARD_SIZE];  // Matrix for storing new UID
 
 MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);  // Create MFRC522 instance
 Servo on_servo, off_servo;                // Create 2 servo instances
-Timer<1, millis> timer; // create a timer with 1 task and millisecond resolution
+Timer<2, millis> timer; // create a timer with 1 task and millisecond resolution
 
-// --- Buzzer handler
-volatile uint8_t BUZZER_FLAG = 0;
-bool toggle_buz(void *) {
+volatile uint8_t BUZZER_FLAG;
+volatile uint8_t LIGHT_STATE;
+volatile uint8_t button_state;
+volatile uint8_t last_button_state;
+bool routine(void *) {
+  
+  // --- Buzzer handler
   if (BUZZER_FLAG)
   {
     digitalWrite(BUZZER_PIN, !digitalRead(BUZZER_PIN)); // toggle the pin
     BUZZER_FLAG--;
+  }
+  // --- Button handler
+  if (system_state==NO_SENSOR) //only trigger on NO_SENSOR state
+  {
+    button_state = digitalRead(BUTTON_PIN); //read button val
+    if (last_button_state&&(last_button_state!=button_state))
+    {
+      if (LIGHT_STATE==ON)    switch_turnoff();
+      else                    switch_turnon();
+    }
+    last_button_state = button_state; //reset last button state to the lates
   }
   return true;
 }
@@ -79,7 +113,7 @@ bool toggle_buz(void *) {
 void setup () 
 {
   // --- System state initialize
-  system_state = LDR;
+  system_state = PIR;
 
   // --- Sensors initialize
   pinMode(SOUND_SENSOR_PIN,INPUT);
@@ -96,17 +130,22 @@ void setup ()
   on_servo.attach(SERVO_ONSWITCH);
   off_servo.attach(SERVO_OFFSWITCH);
   on_servo.write(ON_DEFAULT); off_servo.write(OFF_DEFAULT);
-  
-  // --- buzzer initialize
+  LIGHT_STATE = OFF;
+
+  // --- button and buzzer initialize
+  pinMode(BUTTON_PIN,INPUT_PULLUP);
   pinMode(BUZZER_PIN,OUTPUT);
-  timer.every(100, toggle_buz); //100ms
+  BUZZER_FLAG = OFF;
+  button_state = digitalRead(BUTTON_PIN);
+  last_button_state = button_state;
+  timer.every(100, routine); //100ms
   
   // --- Serial initialize
   Serial.begin (9600);
   Serial.println("System ready!");
 }
  
-void loop () 
+void loop() 
 {
   timer.tick(); // tick the timer
   // ----------------- RFID data collection -----------
@@ -114,22 +153,51 @@ void loop ()
     Serial.print("RFID:"); dump_byte_array(id_buffer,CARD_SIZE); Serial.println();
     checkUID(); // mode changing integrated inside
   }
-  // // ----------------- LDR data collection -----------
-  // ldr_val = analogRead(LDR_PIN);
-  // Serial.print("LDR:"); Serial.println(ldr_val, DEC);
+
+  switch (system_state)
+{
+  case   PIR:
+    // ----------------- LDR data collection -----------
+    ldr_val = filter.updateEstimate(analogRead(LDR_PIN));
+    // ----------------- PIR data collection -----------
+    pir_val = digitalRead(PIR_PIN);
+    Serial.print("LDR:"); Serial.print(ldr_val, DEC);
+    Serial.print("\tPIR:"); Serial.println(pir_val, DEC);
+    // ----------------- action on the switch -----------
+    if ((ldr_val<LDR_THRESHOLD)&&(pir_val)) switch_turnon();
+    else                                    switch_turnoff();
+    break;
+  case   SOUND:
+    /* code */
+    break;
+  case   NO_SENSOR:
+    /* do nothing - the timer already handle the task */
+    break;
+  default:
+    break;
+  }
   // // ----------------- Sound data collection -----------
   // sound_val = digitalRead(SOUND_SENSOR_PIN);
   // // Serial.print("Sound:");
   // Serial.println(sound_val, DEC);
-  // // ----------------- PIR data collection -----------
-  // pir_val = digitalRead(PIR_PIN);
-  // Serial.print("PIR:"); Serial.println(pir_val, DEC);
-  
-  // ----------------- Servo control -----------
-  on_servo.write(ON_TRIGGER); off_servo.write(OFF_TRIGGER);
 
-  Serial.println();
+  // if (LIGHT_STATE==ON)  switch_turnon();
+  // else                  switch_turnoff();
+}
 
+// ----------------- Servo control -----------
+void switch_turnon()
+{
+  on_servo.write(ON_TRIGGER);
+  off_servo.write(OFF_RELEASE);
+  LIGHT_STATE=ON;
+}
+
+void switch_turnoff()
+{
+  on_servo.write(ON_RELEASE);
+  off_servo.write(OFF_TRIGGER);
+  LIGHT_STATE=OFF;
 }
 
 // #################### Additional RFID helper functions ############################
@@ -138,7 +206,7 @@ bool getRFID(void) {
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial())
   { //if new card is found
     memcpy(id_buffer, rfid.uid.uidByte, CARD_SIZE); //save it to the buffer
-    isPICCpresent = true; BUZZER_FLAG = 2;
+    isPICCpresent = true; BUZZER_FLAG = ACTIVATE;
   }
   rfid.PICC_HaltA(); // Halt PICC
   rfid.PCD_StopCrypto1(); // Stop encryption on PCD
@@ -167,14 +235,14 @@ bool checkUID(void){
 void system_state_update() {
   switch (system_state)
   {
-  case LDR:
+  case PIR:
     system_state = SOUND; Serial.println("SOUND mode");
     break;
   case SOUND:
-    system_state = PIR; Serial.println("PIR mode");
+    system_state = NO_SENSOR; Serial.println("NO SENSOR mode");
     break;
-  case PIR:
-    system_state = LDR; Serial.println("LDR mode");
+  case NO_SENSOR:
+    system_state = PIR; Serial.println("PIR mode");
   default:
     break;
   }

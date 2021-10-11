@@ -22,6 +22,7 @@
                 "C:\\Program Files (x86)\\Arduino\\hardware\\arduino\\avr\\libraries\\SPI\\src",
                 "C:\\Users\\minha\\Documents\\Arduino\\libraries\\rfid-master\\src",
                 "C:\\Users\\minha\\Documents\\Arduino\\libraries\\arduino-timer-master\\src",
+                "C:\\Users\\minha\\Documents\\Arduino\\libraries\\SimpleKalmanFilter-master\\src",
                 "c:\\program files (x86)\\arduino\\hardware\\tools\\avr\\lib\\gcc\\avr\\7.3.0\\include",
                 "c:\\program files (x86)\\arduino\\hardware\\tools\\avr\\lib\\gcc\\avr\\7.3.0\\include-fixed",
                 "c:\\program files (x86)\\arduino\\hardware\\tools\\avr\\avr\\include"
