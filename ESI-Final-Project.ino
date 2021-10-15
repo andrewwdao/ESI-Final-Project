@@ -21,12 +21,13 @@
 #include <SimpleKalmanFilter.h>
 
 #define LDR_PIN           A0
-#define BUTTON_PIN        3
+#define SOUND_SENSOR_APIN A1
+#define SOUND_SENSOR_PIN  3
 #define PIR_PIN           4
 #define SERVO_ONSWITCH    5
 #define SERVO_OFFSWITCH   6
 #define BUZZER_PIN        7
-#define SOUND_SENSOR_PIN  8
+#define BUTTON_PIN        8
 #define RFID_RST_PIN      9  
 #define RFID_SS_PIN       10
 //      RFID_MOSI         11
@@ -74,6 +75,9 @@ enum {
 #define PRESSED             0
 #define RELEASED            1
 
+// ---sound constant
+#define SOUND_CMD_DELAY     500
+
 uint8_t sound_val = 0;
 uint16_t ldr_val = 0;
 uint8_t  pir_val = 0;
@@ -81,12 +85,16 @@ uint8_t  id_buffer[CARD_SIZE];  // Matrix for storing new UID
 
 MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);  // Create MFRC522 instance
 Servo on_servo, off_servo;                // Create 2 servo instances
-Timer<2, millis> timer; // create a timer with 1 task and millisecond resolution
+Timer<1, millis> timer; // create a timer with 1 task and millisecond resolution
 
 volatile uint8_t BUZZER_FLAG;
+volatile uint8_t SOUND_FLAG;
+volatile uint8_t INTERRUPT_FLAG;
 volatile uint8_t LIGHT_STATE;
 volatile uint8_t button_state;
 volatile uint8_t last_button_state;
+volatile uint64_t last_sound_millis;
+
 bool routine(void *) {
   
   // --- Buzzer handler
@@ -110,13 +118,21 @@ bool routine(void *) {
 }
 // ---
 
+void soundInterrupt() {
+  last_sound_millis = millis();
+  SOUND_FLAG = true;
+}
+
 void setup () 
 {
   // --- System state initialize
-  system_state = PIR;
+  system_state = SOUND;
 
   // --- Sensors initialize
   pinMode(SOUND_SENSOR_PIN,INPUT);
+  INTERRUPT_FLAG = (system_state==SOUND)?false:true;
+  SOUND_FLAG = false; 
+  
   pinMode(LDR_PIN,INPUT);
   pinMode(PIR_PIN,INPUT);
   digitalWrite(PIR_PIN,LOW);
@@ -138,8 +154,8 @@ void setup ()
   BUZZER_FLAG = OFF;
   button_state = digitalRead(BUTTON_PIN);
   last_button_state = button_state;
-  timer.every(100, routine); //100ms
-  
+  timer.every(100, routine); //100ms 
+
   // --- Serial initialize
   Serial.begin (9600);
   Serial.println("System ready!");
@@ -157,6 +173,11 @@ void loop()
   switch (system_state)
 {
   case   PIR:
+    // --- disable the sound interrupt
+    if (INTERRUPT_FLAG){
+      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+      INTERRUPT_FLAG = false;
+    }
     // ----------------- LDR data collection -----------
     ldr_val = filter.updateEstimate(analogRead(LDR_PIN));
     // ----------------- PIR data collection -----------
@@ -168,21 +189,34 @@ void loop()
     else                                    switch_turnoff();
     break;
   case   SOUND:
-    /* code */
+    // ----------------- Enable the sound interrupt if hasn't been -----------
+    if ((!INTERRUPT_FLAG)&&((millis()-last_sound_millis)>SOUND_CMD_DELAY)){
+      attachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN), soundInterrupt, RISING);
+      delay(50);
+      INTERRUPT_FLAG = true;
+    }
+    // ----------------- Sound data handling -----------
+    if (SOUND_FLAG) {
+      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+      Serial.println("Sound detected");
+      delay(50);
+      INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
+      SOUND_FLAG = false;
+      if (LIGHT_STATE==ON)    switch_turnoff();
+      else                    switch_turnon();
+    }
     break;
   case   NO_SENSOR:
-    /* do nothing - the timer already handle the task */
+    // --- disable the sound interrupt
+    if (INTERRUPT_FLAG){
+      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+      INTERRUPT_FLAG = false;
+    } 
+    /* do nothing else - the timer already handle the task */
     break;
   default:
     break;
   }
-  // // ----------------- Sound data collection -----------
-  // sound_val = digitalRead(SOUND_SENSOR_PIN);
-  // // Serial.print("Sound:");
-  // Serial.println(sound_val, DEC);
-
-  // if (LIGHT_STATE==ON)  switch_turnon();
-  // else                  switch_turnoff();
 }
 
 // ----------------- Servo control -----------
