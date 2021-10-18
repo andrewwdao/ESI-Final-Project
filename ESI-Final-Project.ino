@@ -16,7 +16,6 @@
 #include "Servo.h"
 #include "SPI.h"
 #include "MFRC522.h"
-#include "pitches.h"
 #include <arduino-timer.h>
 #include <SimpleKalmanFilter.h>
 
@@ -24,8 +23,7 @@
 #define SOUND_SENSOR_APIN A1
 #define SOUND_SENSOR_PIN  3
 #define PIR_PIN           4
-#define SERVO_ONSWITCH    5
-#define SERVO_OFFSWITCH   6
+#define SERVO_PIN         5
 #define BUZZER_PIN        7
 #define BUTTON_PIN        8
 #define RFID_RST_PIN      9  
@@ -41,7 +39,7 @@
 // card data
 const byte RFID_KEY[CARDS_KNOWN][CARD_SIZE] = {
   {0xFA, 0x20, 0x7B, 0x2E},
-  {0xe5, 0xa2, 0x9c, 0x2F}
+  {0xE3, 0xAA, 0x19, 0x16}
 };
 
 // --- LDR components
@@ -55,12 +53,8 @@ const byte RFID_KEY[CARDS_KNOWN][CARD_SIZE] = {
 SimpleKalmanFilter filter(2, 2, 0.01);
 
 // --- servo angles
-#define ON_TRIGGER          90
-#define ON_RELEASE          0
-#define ON_DEFAULT          ON_RELEASE
-#define OFF_TRIGGER         90
-#define OFF_RELEASE         0
-#define OFF_DEFAULT         OFF_TRIGGER
+#define SERVO_ON          180
+#define SERVO_OFF         0
 
 enum {
   PIR,
@@ -76,7 +70,7 @@ enum {
 #define RELEASED            1
 
 // ---sound constant
-#define SOUND_CMD_DELAY     500
+#define SOUND_CMD_DELAY     100
 
 uint8_t sound_val = 0;
 uint16_t ldr_val = 0;
@@ -84,7 +78,7 @@ uint8_t  pir_val = 0;
 uint8_t  id_buffer[CARD_SIZE];  // Matrix for storing new UID
 
 MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);  // Create MFRC522 instance
-Servo on_servo, off_servo;                // Create 2 servo instances
+Servo servo, off_servo;                // Create 2 servo instances
 Timer<1, millis> timer; // create a timer with 1 task and millisecond resolution
 
 volatile uint8_t BUZZER_FLAG;
@@ -143,9 +137,8 @@ void setup ()
   Serial.println("RFID Reader: "); rfid.PCD_DumpVersionToSerial();
   
   // --- servo initialize
-  on_servo.attach(SERVO_ONSWITCH);
-  off_servo.attach(SERVO_OFFSWITCH);
-  on_servo.write(ON_DEFAULT); off_servo.write(OFF_DEFAULT);
+  servo.attach(SERVO_PIN);
+  servo.write(SERVO_OFF);
   LIGHT_STATE = OFF;
 
   // --- button and buzzer initialize
@@ -192,16 +185,19 @@ void loop()
     // ----------------- Enable the sound interrupt if hasn't been -----------
     if ((!INTERRUPT_FLAG)&&((millis()-last_sound_millis)>SOUND_CMD_DELAY)){
       attachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN), soundInterrupt, RISING);
-      delay(50);
-      INTERRUPT_FLAG = true;
+      delay(1000);
+      INTERRUPT_FLAG = true; // indicate that the interrupt has been enable
+      SOUND_FLAG = false; // stop the servo from triggering 
+      last_sound_millis = millis(); // reset the timer
     }
     // ----------------- Sound data handling -----------
     if (SOUND_FLAG) {
+      SOUND_FLAG = false;
       detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
       Serial.println("Sound detected");
       delay(50);
       INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
-      SOUND_FLAG = false;
+      SOUND_FLAG = false; //
       if (LIGHT_STATE==ON)    switch_turnoff();
       else                    switch_turnon();
     }
@@ -222,15 +218,13 @@ void loop()
 // ----------------- Servo control -----------
 void switch_turnon()
 {
-  on_servo.write(ON_TRIGGER);
-  off_servo.write(OFF_RELEASE);
+  servo.write(SERVO_ON);
   LIGHT_STATE=ON;
 }
 
 void switch_turnoff()
 {
-  on_servo.write(ON_RELEASE);
-  off_servo.write(OFF_TRIGGER);
+  servo.write(SERVO_OFF);
   LIGHT_STATE=OFF;
 }
 
