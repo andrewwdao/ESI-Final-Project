@@ -56,11 +56,16 @@ SimpleKalmanFilter filter(2, 2, 0.01);
 #define SERVO_ON          180
 #define SERVO_OFF         0
 
-enum {
-  PIR,
-  SOUND,
-  NO_SENSOR
-} system_state;
+// enum {
+//   PIR,
+//   SOUND,
+//   NO_SENSOR
+// } system_state;
+
+#define AUTOMATIC           255
+#define MANUAL              0
+
+uint8_t sys_state;
 
 #define OFF                 0
 #define ON                  1
@@ -70,7 +75,7 @@ enum {
 #define RELEASED            1
 
 // ---sound constant
-#define SOUND_CMD_DELAY     100
+#define SOUND_CMD_DELAY     1000
 
 uint8_t sound_val = 0;
 uint16_t ldr_val = 0;
@@ -98,7 +103,9 @@ bool routine(void *) {
     BUZZER_FLAG--;
   }
   // --- Button handler
-  if (system_state==NO_SENSOR) //only trigger on NO_SENSOR state
+  // if (system_state==NO_SENSOR) //only trigger on NO_SENSOR state
+  // {
+  if (sys_state==MANUAL) //only trigger on MANUAL state
   {
     button_state = digitalRead(BUTTON_PIN); //read button val
     if (last_button_state&&(last_button_state!=button_state))
@@ -113,19 +120,20 @@ bool routine(void *) {
 // ---
 
 void soundInterrupt() {
-  last_sound_millis = millis();
+  // last_sound_millis = millis();
   SOUND_FLAG = true;
 }
 
 void setup () 
 {
   // --- System state initialize
-  system_state = SOUND;
+  // system_state = SOUND;
+  sys_state = AUTOMATIC;
 
   // --- Sensors initialize
   pinMode(SOUND_SENSOR_PIN,INPUT);
-  INTERRUPT_FLAG = (system_state==SOUND)?false:true;
-  SOUND_FLAG = false; 
+  INTERRUPT_FLAG = false; // false so that the loop can take care of turning the interrupt on
+  SOUND_FLAG = false;  //initialize
   
   pinMode(LDR_PIN,INPUT);
   pinMode(PIR_PIN,INPUT);
@@ -163,67 +171,121 @@ void loop()
     checkUID(); // mode changing integrated inside
   }
 
-  switch (system_state)
-{
-  case   PIR:
-    // --- disable the sound interrupt
-    if (INTERRUPT_FLAG){
-      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
-      INTERRUPT_FLAG = false;
-    }
-    // ----------------- LDR data collection -----------
-    ldr_val = filter.updateEstimate(analogRead(LDR_PIN));
-    // ----------------- PIR data collection -----------
-    pir_val = digitalRead(PIR_PIN);
-    Serial.print("LDR:"); Serial.print(ldr_val, DEC);
-    Serial.print("\tPIR:"); Serial.println(pir_val, DEC);
-    // ----------------- action on the switch -----------
-    if ((ldr_val<LDR_THRESHOLD)&&(pir_val)) switch_turnon();
-    else                                    switch_turnoff();
-    break;
-  case   SOUND:
-    // ----------------- Enable the sound interrupt if hasn't been -----------
-    if ((!INTERRUPT_FLAG)&&((millis()-last_sound_millis)>SOUND_CMD_DELAY)){
-      attachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN), soundInterrupt, RISING);
-      delay(1000);
-      INTERRUPT_FLAG = true; // indicate that the interrupt has been enable
-      SOUND_FLAG = false; // stop the servo from triggering 
-      last_sound_millis = millis(); // reset the timer
-    }
-    // ----------------- Sound data handling -----------
-    if (SOUND_FLAG) {
-      SOUND_FLAG = false;
-      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
-      Serial.println("Sound detected");
-      delay(50);
-      INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
-      SOUND_FLAG = false; //
-      if (LIGHT_STATE==ON)    switch_turnoff();
-      else                    switch_turnon();
-    }
-    break;
-  case   NO_SENSOR:
+  if (sys_state==MANUAL)
+  {
     // --- disable the sound interrupt
     if (INTERRUPT_FLAG){
       detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
       INTERRUPT_FLAG = false;
     } 
     /* do nothing else - the timer already handle the task */
-    break;
-  default:
-    break;
+  } else // AUTOMATIC MODE
+  {
+    // ----------------- LDR data collection -----------
+    ldr_val = filter.updateEstimate(analogRead(LDR_PIN));
+    Serial.print("LDR:"); Serial.print(ldr_val, DEC);
+    // ================== Night mode - only activated when night come =======================
+    if (ldr_val < LDR_THRESHOLD)
+    {
+      // ----------------- PIR data collection -----------
+      pir_val = digitalRead(PIR_PIN);
+      Serial.print("\tPIR:"); Serial.print(pir_val, DEC);
+      // ----------------- action on the switch -----------
+      if (pir_val){ // detect human while environment is dark
+        detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+        if (LIGHT_STATE==OFF)    switch_turnon();
+        delay(50);
+        INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
+        last_sound_millis = millis(); // reset the timer
+      }
+    }
+    Serial.println();
+    // ================== COMBINED code for day and night ===================================
+    // ----------------- Enable the sound interrupt if hasn't been -----------
+    if ((!INTERRUPT_FLAG)&&((millis()-last_sound_millis)>SOUND_CMD_DELAY)){
+      attachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN), soundInterrupt, RISING);
+      delay(100);
+      INTERRUPT_FLAG = true; // indicate that the interrupt has been enable
+      SOUND_FLAG = false; // stop the servo from triggering 
+    }
+    // ----------------- Sound data handling -----------
+    if (SOUND_FLAG) {
+      noInterrupts();
+      detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+      interrupts();
+      if (LIGHT_STATE==ON)    switch_turnoff();
+      else                    switch_turnon();
+      Serial.println("Sound detected");
+      delay(50);
+      INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
+      SOUND_FLAG = false; // reset the sound flag
+      last_sound_millis = millis(); // reset the timer
+    }
   }
+
+//   switch (system_state)
+// {
+//   case   PIR:
+//     // --- disable the sound interrupt
+//     if (INTERRUPT_FLAG){
+//       detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+//       INTERRUPT_FLAG = false;
+//     }
+//     // ----------------- LDR data collection -----------
+//     ldr_val = filter.updateEstimate(analogRead(LDR_PIN));
+//     // ----------------- PIR data collection -----------
+//     pir_val = digitalRead(PIR_PIN);
+//     Serial.print("LDR:"); Serial.print(ldr_val, DEC);
+//     Serial.print("\tPIR:"); Serial.println(pir_val, DEC);
+//     // ----------------- action on the switch -----------
+//     if ((ldr_val<LDR_THRESHOLD)&&(pir_val)) switch_turnon();
+//     else                                    switch_turnoff();
+//     break;
+//   case   SOUND:
+//     // ----------------- Enable the sound interrupt if hasn't been -----------
+//     if ((!INTERRUPT_FLAG)&&((millis()-last_sound_millis)>SOUND_CMD_DELAY)){
+//       attachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN), soundInterrupt, RISING);
+//       delay(1000);
+//       INTERRUPT_FLAG = true; // indicate that the interrupt has been enable
+//       SOUND_FLAG = false; // stop the servo from triggering 
+//       last_sound_millis = millis(); // reset the timer
+//     }
+//     // ----------------- Sound data handling -----------
+//     if (SOUND_FLAG) {
+//       SOUND_FLAG = false;
+//       detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+//       Serial.println("Sound detected");
+//       delay(50);
+//       INTERRUPT_FLAG = false; // indicate that the interrupt has been disable
+//       SOUND_FLAG = false; //
+//       if (LIGHT_STATE==ON)    switch_turnoff();
+//       else                    switch_turnon();
+//     }
+//     break;
+//   case   NO_SENSOR:
+//     // --- disable the sound interrupt
+//     if (INTERRUPT_FLAG){
+//       detachInterrupt(digitalPinToInterrupt(SOUND_SENSOR_PIN));
+//       INTERRUPT_FLAG = false;
+//     } 
+//     /* do nothing else - the timer already handle the task */
+//     break;
+//   default:
+//     break;
+//   }
 }
 
 // ----------------- Servo control -----------
 void switch_turnon()
 {
+  Serial.println("Switch turn on");
   servo.write(SERVO_ON);
   LIGHT_STATE=ON;
 }
 
 void switch_turnoff()
 {
+  Serial.println("Switch turn off");
   servo.write(SERVO_OFF);
   LIGHT_STATE=OFF;
 }
@@ -261,19 +323,30 @@ bool checkUID(void){
 }//end checkUID
 
 void system_state_update() {
-  switch (system_state)
+  switch (sys_state)
   {
-  case PIR:
-    system_state = SOUND; Serial.println("SOUND mode");
+  case AUTOMATIC:
+    sys_state = MANUAL; Serial.println("MANUAL mode");
     break;
-  case SOUND:
-    system_state = NO_SENSOR; Serial.println("NO SENSOR mode");
+  case MANUAL:
+    sys_state = AUTOMATIC; Serial.println("AUTOMATIC mode");
     break;
-  case NO_SENSOR:
-    system_state = PIR; Serial.println("PIR mode");
   default:
     break;
   }
+  // switch (system_state)
+  // {
+  // case PIR:
+  //   system_state = SOUND; Serial.println("SOUND mode");
+  //   break;
+  // case SOUND:
+  //   system_state = NO_SENSOR; Serial.println("NO SENSOR mode");
+  //   break;
+  // case NO_SENSOR:
+  //   system_state = PIR; Serial.println("PIR mode");
+  // default:
+  //   break;
+  // }
 }
 
 /**
